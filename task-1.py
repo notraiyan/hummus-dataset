@@ -1,157 +1,132 @@
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
 import re
+import matplotlib.pyplot as plt
+import nltk
+import pandas as pd
+import seaborn as sns
+from nltk.tokenize import sent_tokenize
 
-# Exploratory Data Analysis and Text Preparation
+# Task 1: Exploratory Data Analysis and Text Preparation
 
+# Run the dataset loader module first and use it here
+
+for resource in ("punkt", "punkt_tab"):
+    nltk.download(resource, quiet=True)
+
+# HUMMUS pp_reviews.csv stores the review body in `text`.
+TEXT_COL = "text"
+RATING_COL = "rating"
+DATE_COL = "submit_date"
+ID_COL = "review_id" if "review_id" in df_reviews.columns else None
 
 # ==========================================
-# 1. DATA PREPARATION & MISSING VALUES
+# 1. MISSING VALUES
 # ==========================================
-# Identify standard columns
-text_col = 'review' if 'review' in df_reviews.columns else 'review_text' if 'review_text' in df_reviews.columns else 'text'
-rating_col = 'rating' if 'rating' in df_reviews.columns else 'stars' if 'stars' in df_reviews.columns else None
+for name, df in [("Reviews", df_reviews), ("Members", df_members), ("Recipes", df_recipes)]:
+    print(f"\n--- Missing Values in {name} ---")
+    print(df.isnull().sum())
 
-print("\n--- Missing Values in Reviews ---")
-print(df_reviews.isnull().sum())
-
-print("\n--- Missing Values in Members ---")
-print(df_members.isnull().sum())
-
-print("\n--- Missing Values in recipes ---")
-print(df_recipes.isnull().sum())
-
-# Drop rows without text
-df_reviews = df_reviews.dropna(subset=[text_col])
-df_reviews[text_col] = df_reviews[text_col].astype(str)
+# HUMMUS adds authorship rows (rating 6) that have no review text; they cannot be analysed as text.
+n_total = len(df_reviews)
+df_reviews = df_reviews.dropna(subset=[TEXT_COL]).copy()
+df_reviews[TEXT_COL] = df_reviews[TEXT_COL].astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
+df_reviews = df_reviews[df_reviews[TEXT_COL] != ""].copy()
+print(f"\nReviews with text: {len(df_reviews)} / {n_total} ({len(df_reviews) / n_total:.1%})")
 
 # ==========================================
 # 2. REVIEW LENGTH ANALYSIS
 # ==========================================
-df_reviews['review_length'] = df_reviews[text_col].apply(lambda x: len(x.split()))
+df_reviews["review_length"] = df_reviews[TEXT_COL].str.split().str.len()
 
-print("\n--- Review Length Statistics ---")
-print(df_reviews['review_length'].describe())
+print("\n--- Review Length Statistics (words) ---")
+print(df_reviews["review_length"].describe())
 
 plt.figure(figsize=(10, 5))
-sns.histplot(df_reviews['review_length'], bins=50, kde=True, color='teal')
-plt.title('Distribution of Review Lengths')
-plt.xlabel('Number of Words')
-plt.ylabel('Frequency')
-plt.xlim(0, df_reviews['review_length'].quantile(0.95)) # Cap at 95th percentile
+sns.histplot(df_reviews["review_length"], bins=50, kde=True, color="teal")
+plt.title("Distribution of Review Lengths")
+plt.xlabel("Number of Words")
+plt.ylabel("Frequency")
+plt.xlim(0, df_reviews["review_length"].quantile(0.95))  # cap at 95th percentile
 plt.show()
 
 # ==========================================
 # 3. RATING DISTRIBUTION
 # ==========================================
-if rating_col:
-    print("\n--- Rating Distribution (%) ---")
-    print(df_reviews[rating_col].value_counts(normalize=True).sort_index() * 100)
+# HUMMUS preprocessing: rating 0 (no rating) -> 2.5, authorship -> 6. Only 1-5 are real star ratings.
+real_mask = df_reviews[RATING_COL].isin([1, 2, 3, 4, 5])
+print("\n--- Rating Composition of Reviews With Text (%) ---")
+print(df_reviews[RATING_COL].value_counts(normalize=True).sort_index() * 100)
+print(f"\nImputed (2.5) share: {(df_reviews[RATING_COL] == 2.5).mean():.2%}")
 
-    plt.figure(figsize=(8, 5))
-    sns.countplot(
-        x=rating_col, 
-        data=df_reviews, 
-        hue=rating_col, 
-        palette='viridis', 
-        legend=False
-    )
-    plt.title('Distribution of Ratings')
-    plt.xlabel('Rating')
-    plt.ylabel('Number of Reviews')
-    plt.show()
+print("\n--- Explicit Star Rating Distribution (%, 1-5 only) ---")
+print(df_reviews.loc[real_mask, RATING_COL].value_counts(normalize=True).sort_index() * 100)
+
+plt.figure(figsize=(8, 5))
+sns.countplot(x=RATING_COL, data=df_reviews[real_mask], hue=RATING_COL, palette="viridis", legend=False)
+plt.title("Distribution of Explicit Ratings (1-5)")
+plt.xlabel("Rating")
+plt.ylabel("Number of Reviews")
+plt.show()
 
 # ==========================================
 # 4. CONTEXTUAL EXPRESSIONS FREQUENCY
 # ==========================================
 context_patterns = {
-    "weeknight/weekday": r"\b(weeknight|weekday)s?\b",
-    "for my children/kids": r"\b(for my children|for my kids|for the kids|for my son|for my daughter)\b",
-    "special occasion": r"\b(special occasion|holiday|anniversary|celebration)\b"
+    "weeknight/weekday": r"\b(?:week ?nights?|week ?days?|school nights?|work nights?)\b",
+    "weekend": r"\b(?:weekends?|sunday dinners?|saturday)\b",
+    "children/kids": r"\b(?:for|with|my|our) (?:the |my |our )?(?:children|kids|kiddos?|toddlers?|sons?|daughters?|grandkids?|grandchildren)\b",
+    "partner/spouse": r"\b(?:my|our) (?:husband|wife|partner|boyfriend|girlfriend|hubby|dh|fiance)\b",
+    "guests/company": r"\b(?:guests?|company|dinner party|potluck|crowd)\b",
+    "special occasion": r"\b(?:special occasions?|holidays?|anniversary|birthday|celebrations?|christmas|thanksgiving|easter)\b",
+    "time-constrained": r"\b(?:quick|in a hurry|short on time|busy (?:night|day|weeknight)s?|time[- ]consuming)\b",
 }
 
-context_counts = {}
-for context_name, pattern in context_patterns.items():
-    mentions = df_reviews[text_col].apply(lambda x: 1 if re.search(pattern, x, re.IGNORECASE) else 0).sum()
-    context_counts[context_name] = mentions
+context_counts = {
+    name: int(df_reviews[TEXT_COL].str.contains(pattern, case=False, regex=True).sum())
+    for name, pattern in context_patterns.items()
+}
 
+count_df = pd.DataFrame.from_dict(context_counts, orient="index", columns=["Review Count"])
+count_df["Percentage (%)"] = count_df["Review Count"] / len(df_reviews) * 100
+count_df = count_df.sort_values("Review Count", ascending=False)
 print("\n--- Frequency of Contextual Expressions ---")
-count_df = pd.DataFrame.from_dict(context_counts, orient='index', columns=['Review Count'])
-count_df['Percentage (%)'] = (count_df['Review Count'] / len(df_reviews)) * 100
-print(count_df.sort_values(by='Review Count', ascending=False))
+print(count_df)
 
-# Plot contextual expressions
-plt.figure(figsize=(8, 5))
-sns.barplot(
-    x=count_df.index, 
-    y=count_df['Review Count'], 
-    hue=count_df.index, 
-    palette='magma', 
-    legend=False
-)
-plt.title('Frequency of Contextual Expressions in Reviews')
-plt.ylabel('Number of Reviews')
-plt.xticks(rotation=15)
+plt.figure(figsize=(10, 5))
+sns.barplot(x=count_df.index, y=count_df["Review Count"], hue=count_df.index, palette="magma", legend=False)
+plt.title("Frequency of Contextual Expressions in Reviews")
+plt.ylabel("Number of Reviews")
+plt.xticks(rotation=25, ha="right")
 plt.tight_layout()
 plt.show()
 
-
 # ==========================================
-# 5. Split Reviews into Sentences
+# 5. SENTENCE / CLAUSE SPLITTING
 # ==========================================
+# Zero-width lookahead keeps the contrast word at the start of its clause; "even" stays attached to "though".
+CONTRAST_PATTERN = re.compile(r"(?=\b(?:but|although|however|yet|even though)\b)|(?<!even )(?=\bthough\b)", re.IGNORECASE)
 
-import nltk
-from nltk.tokenize import sent_tokenize
-
-# Download NLTK sentence tokenizer (run once)
-# nltk.download('punkt')
 
 def split_into_sentences(text):
-    """
-    Splits text into sentences, and further splits into clauses based on 
-    contrast words, preserving the contrast words and negations.
-    """
+    """Split into sentences, then into clauses before contrast words. Negations are never removed."""
     if pd.isna(text):
         return []
-        
-    # 1. Standard sentence splitting (preserves all negations like 'not', 'never')
-    sentence_tokens = sent_tokenize(str(text))
-    
-    sentences = []
-    
-    # 2. Split clauses at contrast words (but, although, however, yet)
-    # The regex lookahead (?=\b...\b) splits BEFORE the word, 
-    # ensuring the word remains in the resulting clause.
-    contrast_pattern = r'(?=\b(?:but|although|however|yet|though)\b)'
-    
-    for sentence in sentence_tokens:
-        # Split the sentence based on the pattern
-        sub_sentences = re.split(contrast_pattern, sentence, flags=re.IGNORECASE)
-        
-        # Clean whitespace and punctuation at the edges
-        for sub_sentence in sub_sentences:
-            cleaned_sentence = sub_sentence.strip(',; ')
-            if cleaned_sentence:
-                sentences.append(cleaned_sentence)
-                
-    return sentences
+    clauses = []
+    for sentence in sent_tokenize(str(text)):
+        for clause in CONTRAST_PATTERN.split(sentence):
+            clause = clause.strip(",; ")
+            if clause:
+                clauses.append(clause)
+    return clauses
 
-# ==========================================
-# TEST THE FUNCTION
-# Identify the correct text column dynamically
-text_col = 'review' if 'review' in df_reviews.columns else 'review_text' if 'review_text' in df_reviews.columns else 'text'
 
-# Create a new DataFrame with one clause per row
-exploded_reviews = df_reviews.copy()
+df_reviews["clauses"] = df_reviews[TEXT_COL].apply(split_into_sentences)
 
-# Apply the function using the dynamically found column name (text_col)
-exploded_reviews['sentences'] = exploded_reviews[text_col].apply(split_into_sentences)
+# One row per clause; keep ids and clause position so later tuples can cite evidence spans.
+keep_cols = [c for c in (ID_COL, "recipe_id", "member_id", DATE_COL, RATING_COL, "clauses") if c and c in df_reviews.columns]
+df_clauses = df_reviews[keep_cols].explode("clauses").rename(columns={"clauses": "sentences"})
+df_clauses = df_clauses.dropna(subset=["sentences"])
+df_clauses["clause_idx"] = df_clauses.groupby(level=0).cumcount()
+df_clauses = df_clauses.reset_index(names="review_row")
 
-# 'Explode' the list so each clause gets its own row
-df_clauses = exploded_reviews.explode('sentences').reset_index(drop=True)
-
-# Drop empty clauses
-df_clauses = df_clauses[df_clauses['sentences'].str.len() > 0]
-
-print(df_clauses[['recipe_id', 'sentences']].head())
+print(f"\nClauses: {len(df_clauses)} from {len(df_reviews)} reviews")
+print(df_clauses.head(10))
