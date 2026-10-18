@@ -15,7 +15,8 @@ for resource in ("punkt", "punkt_tab"):
 # HUMMUS pp_reviews.csv stores the review body in `text`.
 TEXT_COL = "text"
 RATING_COL = "rating"
-DATE_COL = "submit_date"
+# pp_reviews.csv has no submit_date; last_modified_date is the only review timestamp (an edit can move it later).
+DATE_COL = "last_modified_date"
 ID_COL = "review_id" if "review_id" in df_reviews.columns else None
 
 # ==========================================
@@ -30,6 +31,7 @@ n_total = len(df_reviews)
 df_reviews = df_reviews.dropna(subset=[TEXT_COL]).copy()
 df_reviews[TEXT_COL] = df_reviews[TEXT_COL].astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
 df_reviews = df_reviews[df_reviews[TEXT_COL] != ""].copy()
+df_reviews[DATE_COL] = pd.to_datetime(df_reviews[DATE_COL], errors="coerce")
 print(f"\nReviews with text: {len(df_reviews)} / {n_total} ({len(df_reviews) / n_total:.1%})")
 
 # ==========================================

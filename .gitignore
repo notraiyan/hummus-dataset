@@ -1,0 +1,19 @@
+# Datasets (HUMMUS is downloaded from Kaggle; never commit it)
+*.csv
+*.csv.zip
+*.zip
+*.parquet
+data/
+
+# Generated outputs
+hummus_ner_model/
+
+# Python and notebooks
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# OS
+.DS_Store
