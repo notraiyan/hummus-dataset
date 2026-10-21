@@ -4,10 +4,10 @@ import nltk
 import pandas as pd
 import seaborn as sns
 from nltk.tokenize import sent_tokenize
+from kagglehub import KaggleDatasetAdapter
+import kagglehub
 
 # Task 1: Exploratory Data Analysis and Text Preparation
-
-# Run the dataset loader module first and use it here
 
 for resource in ("punkt", "punkt_tab"):
     nltk.download(resource, quiet=True)
@@ -16,25 +16,50 @@ for resource in ("punkt", "punkt_tab"):
 TEXT_COL = "text"
 RATING_COL = "rating"
 DATE_COL = "submit_date"
+
+
+# 1. LOAD DATASETS
+
+print("Loading datasets...")
+df_members = kagglehub.dataset_load(
+    KaggleDatasetAdapter.PANDAS,
+    "raiyanahmed/hummus",
+    "pp_members.csv",
+    pandas_kwargs={"low_memory": False}
+)
+
+df_recipes = kagglehub.dataset_load(
+    KaggleDatasetAdapter.PANDAS,
+    "raiyanahmed/hummus",
+    "pp_recipes.csv",
+    pandas_kwargs={"low_memory": False}
+)
+
+df_reviews = kagglehub.dataset_load(
+    KaggleDatasetAdapter.PANDAS,
+    "raiyanahmed/hummus",
+    "pp_reviews.csv",
+    pandas_kwargs={"low_memory": False}
+)
+
 ID_COL = "review_id" if "review_id" in df_reviews.columns else None
 
-# ==========================================
-# 1. MISSING VALUES
-# ==========================================
+
+# 2. MISSING VALUES & TEXT CLEANING
+
 for name, df in [("Reviews", df_reviews), ("Members", df_members), ("Recipes", df_recipes)]:
     print(f"\n--- Missing Values in {name} ---")
     print(df.isnull().sum())
 
-# HUMMUS adds authorship rows (rating 6) that have no review text; they cannot be analysed as text.
 n_total = len(df_reviews)
 df_reviews = df_reviews.dropna(subset=[TEXT_COL]).copy()
 df_reviews[TEXT_COL] = df_reviews[TEXT_COL].astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
 df_reviews = df_reviews[df_reviews[TEXT_COL] != ""].copy()
 print(f"\nReviews with text: {len(df_reviews)} / {n_total} ({len(df_reviews) / n_total:.1%})")
 
-# ==========================================
-# 2. REVIEW LENGTH ANALYSIS
-# ==========================================
+
+# 3. REVIEW LENGTH ANALYSIS
+
 df_reviews["review_length"] = df_reviews[TEXT_COL].str.split().str.len()
 
 print("\n--- Review Length Statistics (words) ---")
@@ -48,10 +73,9 @@ plt.ylabel("Frequency")
 plt.xlim(0, df_reviews["review_length"].quantile(0.95))  # cap at 95th percentile
 plt.show()
 
-# ==========================================
-# 3. RATING DISTRIBUTION
-# ==========================================
-# HUMMUS preprocessing: rating 0 (no rating) -> 2.5, authorship -> 6. Only 1-5 are real star ratings.
+
+# 4. RATING DISTRIBUTION
+
 real_mask = df_reviews[RATING_COL].isin([1, 2, 3, 4, 5])
 print("\n--- Rating Composition of Reviews With Text (%) ---")
 print(df_reviews[RATING_COL].value_counts(normalize=True).sort_index() * 100)
@@ -67,9 +91,9 @@ plt.xlabel("Rating")
 plt.ylabel("Number of Reviews")
 plt.show()
 
-# ==========================================
-# 4. CONTEXTUAL EXPRESSIONS FREQUENCY
-# ==========================================
+
+# 5. CONTEXTUAL EXPRESSIONS FREQUENCY
+
 context_patterns = {
     "weeknight/weekday": r"\b(?:week ?nights?|week ?days?|school nights?|work nights?)\b",
     "weekend": r"\b(?:weekends?|sunday dinners?|saturday)\b",
@@ -99,12 +123,10 @@ plt.xticks(rotation=25, ha="right")
 plt.tight_layout()
 plt.show()
 
-# ==========================================
-# 5. SENTENCE / CLAUSE SPLITTING
-# ==========================================
-# Zero-width lookahead keeps the contrast word at the start of its clause; "even" stays attached to "though".
-CONTRAST_PATTERN = re.compile(r"(?=\b(?:but|although|however|yet|even though)\b)|(?<!even )(?=\bthough\b)", re.IGNORECASE)
 
+# 6. SENTENCE / CLAUSE SPLITTING
+
+CONTRAST_PATTERN = re.compile(r"(?=\b(?:but|although|however|yet|even though)\b)|(?<!even )(?=\bthough\b)", re.IGNORECASE)
 
 def split_into_sentences(text):
     """Split into sentences, then into clauses before contrast words. Negations are never removed."""
@@ -118,10 +140,8 @@ def split_into_sentences(text):
                 clauses.append(clause)
     return clauses
 
-
 df_reviews["clauses"] = df_reviews[TEXT_COL].apply(split_into_sentences)
 
-# One row per clause; keep ids and clause position so later tuples can cite evidence spans.
 keep_cols = [c for c in (ID_COL, "recipe_id", "member_id", DATE_COL, RATING_COL, "clauses") if c and c in df_reviews.columns]
 df_clauses = df_reviews[keep_cols].explode("clauses").rename(columns={"clauses": "sentences"})
 df_clauses = df_clauses.dropna(subset=["sentences"])
