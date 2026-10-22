@@ -49,7 +49,7 @@ Dataset caveats that affect the analysis:
 | `task-10.py`      | Task 10: annotation sheets, agreement, evaluation and the protocol's status. |
 | `ANNOTATION.md`   | Guidelines for the annotators and raters. |
 | `LITERATURE.md`   | Related work and the case for the project's novelty (a starting point; check every reference). |
-| `annotation_checked.csv` | LLM's pre-annotation of the 1,200 annotation reviews, checked and corrected by the author (clauses marked `checked` = y); the gold for Task 10. Git-ignored like the data; upload it to Kaggle for Task 10. |
+| `annotation_checked.csv` | LLM's pre-annotation of the 1,200 annotation reviews, checked and corrected by the author (clauses marked `checked` = y); the gold for Task 10. The only CSV tracked in git; upload it to Kaggle for Task 10. |
 
 ## Setup
 
