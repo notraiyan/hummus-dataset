@@ -1,3 +1,4 @@
+import html
 import re
 import matplotlib.pyplot as plt
 import nltk
@@ -26,10 +27,22 @@ for name, df in [("Reviews", df_reviews), ("Members", df_members), ("Recipes", d
     print(f"\n--- Missing Values in {name} ---")
     print(df.isnull().sum())
 
+# Review text holds HTML: escaped characters ("&#039;", "&amp;"), line breaks as <br/> tags (some escaped as
+# "&lt;br/&gt;") and a few formatting tags. Unescape it and keep line breaks as "\n", which the clause splitter uses as
+# sentence boundaries; other whitespace is collapsed.
+BREAK_TAG = re.compile(r"<br\s*/?>", re.IGNORECASE)
+FORMAT_TAG = re.compile(r"</?(?:a|b|i|u|em|strong|p|span|div|font)\b[^>]*>", re.IGNORECASE)
+
+
+def clean_text(text):
+    text = FORMAT_TAG.sub("", BREAK_TAG.sub("\n", html.unescape(str(text))))
+    return re.sub(r"\s*\n\s*", "\n", re.sub(r"[^\S\n]+", " ", text)).strip()
+
+
 # HUMMUS adds authorship rows (rating 6) that have no review text; they cannot be analysed as text.
 n_total = len(df_reviews)
 df_reviews = df_reviews.dropna(subset=[TEXT_COL]).copy()
-df_reviews[TEXT_COL] = df_reviews[TEXT_COL].astype(str).str.replace(r"\s+", " ", regex=True).str.strip()
+df_reviews[TEXT_COL] = df_reviews[TEXT_COL].map(clean_text)
 df_reviews = df_reviews[df_reviews[TEXT_COL] != ""].copy()
 df_reviews[DATE_COL] = pd.to_datetime(df_reviews[DATE_COL], errors="coerce")
 print(f"\nReviews with text: {len(df_reviews)} / {n_total} ({len(df_reviews) / n_total:.1%})")
@@ -109,15 +122,16 @@ CONTRAST_PATTERN = re.compile(r"(?=\b(?:but|although|however|yet|even though)\b)
 
 
 def split_into_sentences(text):
-    """Split into sentences, then into clauses before contrast words. Negations are never removed."""
+    """Split into lines and sentences, then into clauses before contrast words. Negations are never removed."""
     if pd.isna(text):
         return []
     clauses = []
-    for sentence in sent_tokenize(str(text)):
-        for clause in CONTRAST_PATTERN.split(sentence):
-            clause = clause.strip(",; ")
-            if clause:
-                clauses.append(clause)
+    for line in str(text).splitlines():
+        for sentence in sent_tokenize(line):
+            for clause in CONTRAST_PATTERN.split(sentence):
+                clause = clause.strip(",; ")
+                if clause:
+                    clauses.append(clause)
     return clauses
 
 
