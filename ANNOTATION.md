@@ -6,7 +6,7 @@ These guidelines define the labels for Project 29: which food and context words 
 
 - **The 1,200 reviews** (the 200-review pilot and 1,000 further reviews in `annotation_sheet.csv`) were pre-annotated by LLM, following these guidelines.
 - **The author checks and corrects them** in `annotation_checked.csv`: fix or delete wrong labels, add missing ones, and write `y` in `checked` for every clause checked. Only checked clauses are used as gold; report them as machine pre-annotation checked by the author, with the number of clauses checked.
-- **Relevance judgments, topic ratings and explanation checks** are done by the author. A second rater is optional: fill the `_B` columns or the second file only if you have one.
+- **Topic ratings** are done by the author; a second rater is optional (`topic_ratings_B.csv`). Relevance in Task 10 is judged by an LLM and explanations are checked automatically in Task 9 (see the README).
 
 Each row is one clause (column `clause`). The full review is in `review`, only to work out what "it", "they" or "he" refer to. Label only what the clause itself says, and leave a list empty (`[]`) when there is nothing to mark.
 
@@ -64,16 +64,6 @@ Generic praise that names no aspect ("great recipe"), instructions or changes wi
 - Suitability for an occasion is SUITABILITY: a judgement of how well the recipe fits an occasion the clause names ("great for weekend dinners", "perfect for a potluck", "a hit at our Christmas party", "not a weeknight meal", "will be making this every Thanksgiving"), including praise the clause ties to the occasion ("made it for Thanksgiving and everyone loved it"). The span is the judgement with the occasion; the context is that occasion; the holder is whoever judges it, usually the reviewer (people it was served to are the audience, unless the clause gives their verdict: "the guests said it was perfect for a party" is `guests`). No SUITABILITY for praise without an occasion ("great recipe"), a meal time alone ("great for lunch"), an occasion without a judgement ("made it for Christmas"), or an occasion outside the context values ("camping"). When the judgement names another aspect ("too time-consuming for weekdays"), label that aspect, with the occasion as its context, not SUITABILITY.
 - The context is an occasion only when the clause names it ("leftovers for lunch" is `general`). The condition is `condition` or `exception` only when the clause itself limits the opinion ("if", "when", "once", "unless", "without", "best made a day ahead"). A past account of what happened has none ("I had cooked rice, so it was quick").
 
-## Relevance judgments (`relevance_sheet.csv`)
-
-Each row is a request, the member's earlier opinions (quoted, with whose they were), and one candidate recipe. In `relevance_A`, write:
-
-- `2`: fits the request and does not conflict with the member's listed history.
-- `1`: partly fits.
-- `0`: does not fit.
-
-The system that proposed the recipe is hidden. Save the sheet as `relevance_sheet_filled.csv`.
-
 ## Topic ratings (Task 3)
 
 Fill `label` and `interpretable_1to3` in Task 3's `topics_for_human_rating_*.csv`:
@@ -83,13 +73,3 @@ Fill `label` and `interpretable_1to3` in Task 3's `topics_for_human_rating_*.csv
 - `3`: clear theme
 
 Save it as `topic_ratings_A.csv`.
-
-## Explanation checks (`explanation_checks.csv`)
-
-For each summary or explanation, answer `y` or `n` in the `_A` columns:
-
-- **supported:** every claim is backed by the facts it cites or by the recipe record.
-- **attribution:** every opinion is credited to the right person.
-- **conditions:** occasions and conditions are kept.
-
-Save it as `explanation_checks_filled.csv`.

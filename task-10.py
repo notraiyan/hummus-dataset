@@ -1,21 +1,27 @@
-# Imports already made by task-1.py to task-9.py (same notebook): json, os, random, re, np, pd, spacy, Example,
-# compounding, minibatch, cohen_kappa_score, f1_score.
+!pip install -q bitsandbytes
+
+# Imports already made by task-1.py to task-9.py (same notebook): json, os, random, re, np, pd, spacy, torch, Example,
+# compounding, minibatch, AutoModelForCausalLM, AutoTokenizer, cohen_kappa_score, f1_score.
+from transformers import BitsAndBytesConfig
 
 # Task 10: Annotation and Evaluation Protocol
-# Run after task-9.py in the same notebook. Guidelines: ANNOTATION.md.
+# Run after task-9.py in the same notebook. Guidelines: ANNOTATION.md. Kaggle: attach the dataset with
+# annotation_checked.csv and topic_ratings_A.csv, turn internet on and use the "GPU T4 x2" accelerator.
 #   1. Annotation sheet: the 200-review pilot of Tasks 2 and 4 and 1,000 further reviews, pre-annotated by LLM and
 #      checked and corrected by the project author (annotation_checked.csv); only rows marked checked = y are gold.
 #   2. The system scored on the author's checked labels (NER precision/recall/F1; sentiment, condition and negation
 #      macro-F1; tuple-level F1), and an NER model trained on the checked main-set clauses, tested on the pilot.
-#   3. Contextual matching: manually authored requests, candidates pooled from each method, and blind relevance
-#      judgments, scored with NDCG@10 and Recall@10 once judged. Task 8's chronological split cannot test context:
-#      Food.com does not record the request behind a review, and the held-out review is not known in advance.
-#   4. Topic ratings (Task 3's sheet) and explanation checks (Task 9's outputs), by one rater or two.
+#   3. Contextual matching: requests written in advance, candidates pooled from each method, and relevance judged by
+#      an LLM (Qwen3-14B in 4-bit) blind to the method, scored with NDCG@10 and Recall@10. Task 8's chronological split cannot
+#      test context: Food.com does not record the request behind a review, and the held-out review is not known in
+#      advance.
+#   4. Topic ratings (Task 3's sheet), by one rater or two.
 #   5. A status table: every metric of the protocol, what has been measured so far, and what is still missing.
 
 for required in ("df_clauses", "df_reviews", "pilot_rows", "dictionary_ner", "model_ner", "nlp_ner", "preferences_for",
                  "rules_label", "split_into_sentences", "facts", "recipes", "catalog", "popularity", "reviewed",
-                 "parse_request", "satisfies", "score_candidates", "member_facts", "extractive_summary", "df_out"):
+                 "parse_request", "satisfies", "score_candidates", "member_facts", "extractive_summary", "minutes",
+                 "df_out", "llm", "LLM_MODEL"):
     if required not in globals():
         raise NameError(f"{required} is missing: run load-dataset.py and task-1.py to task-9.py in this session first.")
 
@@ -23,8 +29,11 @@ SEED = 42
 N_MAIN = 1_000                       # further reviews after the 200-review pilot
 POOL_DEPTH = 10                      # candidates per method and request in the relevance pool
 N_NER_EPOCHS = 10                    # training the NER model on the checked labels
+JUDGE_MODEL = "Qwen/Qwen3-14B"       # relevance judge (Apache-2.0), 4-bit on a GPU; Task 5's model without one
 OUT_DIR = "/kaggle/working" if os.path.isdir("/kaggle/working") else "."
-ANNOTATION_DIR = OUT_DIR             # where annotation_checked.csv and the *_filled.csv sheets are read from
+# The author's files (annotation_checked.csv, topic_ratings_A.csv): the attached Kaggle dataset that has them.
+ANNOTATION_DIR = next((root for root, _, files in os.walk("/kaggle/input") if "annotation_checked.csv" in files),
+                      OUT_DIR)
 
 
 def filled(name):
@@ -183,8 +192,9 @@ elif annotation_results:
 # ==========================================
 # 3. CONTEXTUAL MATCHING: AUTHORED REQUESTS AND JUDGED RELEVANCE
 # ==========================================
-# Written by hand before any candidate was seen. Each request goes to a member whose history (before Task 8's cut-off)
-# has opinions of that holder, so the contextual profile has something to use.
+# Written before any candidate was seen, by the LLM that helped write this code (not by the author). Each request goes
+# to a member whose history (before Task 8's cut-off) has opinions of that holder, so the contextual profile has
+# something to use.
 AUTHORED_REQUESTS = [
     ("children", "Recommend a quick dinner for my children."),
     ("children", "A lunch my kids will like that takes less than 20 minutes."),
@@ -233,24 +243,71 @@ for i, (holder, text) in enumerate(AUTHORED_REQUESTS):
         rec = recipes.loc[r]
         sheet_rows.append({"request_id": i, "member_id": member, "request": text, "member_history": history_note,
                            "recipe_id": r, "title": rec["title"], "minutes": rec["duration"],
-                           "steps": rec["direction_size"], "tags": ", ".join(rec["tag_list"][:12]),
-                           "relevance_A": "", "relevance_B": ""})
+                           "steps": rec["direction_size"], "tags": ", ".join(rec["tag_list"][:12])})
 relevance_key = pd.DataFrame(key_rows)
 relevance_sheet = pd.DataFrame(sheet_rows).sample(frac=1, random_state=SEED)  # shuffled, so the method is hidden
-relevance_sheet.to_csv(os.path.join(OUT_DIR, "relevance_sheet.csv"), index=False)
 relevance_key.to_csv(os.path.join(OUT_DIR, "relevance_key.csv"), index=False)
-print(f"\nrelevance_sheet.csv: {len(AUTHORED_REQUESTS)} authored requests, {len(relevance_sheet)} candidates to judge "
+print(f"\nrelevance_sheet.csv: {len(AUTHORED_REQUESTS)} requests, {len(relevance_sheet)} candidates "
       f"(top {POOL_DEPTH} of {relevance_key['method'].nunique()} methods, pooled)")
 
+# Relevance is judged by the Task 5 LLM, blind to the method (the pool is shuffled and names no method), in a fixed
+# schema; an answer outside it counts as not relevant. These are LLM judgments, not human ones. Every candidate already
+# meets the request's checkable constraints, so the rubric asks whether the recipe suits the person or occasion named
+# (a first, lenient rubric rated 79% of candidates fully relevant and could not separate the methods).
+RELEVANCE_INSTRUCTIONS = (
+    "You judge recipe recommendations for a Food.com member. You get a request, the member's earlier opinions (quoted "
+    "from their reviews, with whose opinion each was) and one candidate recipe's record (title, time, steps, tags). "
+    "Every candidate already meets the request's time and meal constraints, so meeting them is not enough. Answer 2 "
+    "only if the recipe clearly suits the person or occasion the request names (for example kid-friendly food for "
+    "children, a dish to share for a potluck, a dessert when a dessert is asked for) and nothing in the member's "
+    "earlier opinions argues against it. Answer 1 if it fits the request but is not specially suited to that person or "
+    "occasion, or partly conflicts with the earlier opinions. Answer 0 if it does not suit the request, or clearly "
+    "conflicts with the earlier opinions (for example a spicy dish when the children disliked spicy food). Judge only "
+    "from what is given. Answer with one JSON object and nothing else: "
+    '{"relevance": <0|1|2>}')
+
+
+def load_judge():
+    """(name, tokenizer, model) of the relevance judge: JUDGE_MODEL in 4-bit on a GPU, else Task 5's LLM, else Nones."""
+    if torch.cuda.is_available():
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(JUDGE_MODEL, padding_side="left")
+            model = AutoModelForCausalLM.from_pretrained(
+                JUDGE_MODEL, device_map="auto",
+                quantization_config=BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16))
+            return JUDGE_MODEL, tokenizer, model.eval()
+        except (OSError, ImportError, ValueError, RuntimeError) as e:  # no internet, no bitsandbytes, or no GPU memory
+            torch.cuda.empty_cache()
+            print(f"Could not load {JUDGE_MODEL} ({type(e).__name__}): Task 5's LLM judges instead.")
+    return (LLM_MODEL, llm_tokenizer, llm) if llm is not None else (None, None, None)
+
+
+def llm_relevance(sheet, tokenizer, model, batch_size=8):
+    """0, 1 or 2 per candidate, NaN for an answer outside the schema. Greedy decoding, without a thinking step."""
+    prompts = [tokenizer.apply_chat_template(
+        [{"role": "system", "content": RELEVANCE_INSTRUCTIONS},
+         {"role": "user", "content": f"Request: {r.request}\nMember's earlier opinions: {r.member_history or 'none'}\n"
+                                     f"Recipe: {r.title}; {minutes(recipes.loc[r.recipe_id])}; {r.steps:.0f} steps; "
+                                     f"tags: {r.tags or 'none'}"}],
+        tokenize=False, add_generation_prompt=True, enable_thinking=False) for r in sheet.itertuples()]
+    answers = []
+    for i in range(0, len(prompts), batch_size):
+        batch = tokenizer(prompts[i:i + batch_size], return_tensors="pt", padding=True).to(model.device)
+        with torch.no_grad():
+            output = model.generate(**batch, max_new_tokens=12, do_sample=False)
+        answers += tokenizer.batch_decode(output[:, batch["input_ids"].shape[1]:], skip_special_tokens=True)
+    found = [re.search(r'"relevance"\s*:\s*"?([012])\b', a) for a in answers]
+    return [int(m.group(1)) if m else np.nan for m in found]
+
+
+judge_name, judge_tokenizer, judge = load_judge()
 matching_results = None
-judged = filled("relevance_sheet_filled.csv")
-if judged is not None:
-    raters = [c for c in ("relevance_A", "relevance_B") if judged[c].notna().any()]
-    both = judged.dropna(subset=["relevance_A", "relevance_B"])
-    if len(raters) == 2 and len(both):
-        print(f"Relevance agreement (quadratic-weighted kappa, {len(both)} items): "
-              f"{cohen_kappa_score(both['relevance_A'].astype(int), both['relevance_B'].astype(int), weights='quadratic'):.3f}")
-    relevance = judged.set_index(["request_id", "recipe_id"])[raters].mean(axis=1).fillna(0.0)
+if judge is not None:
+    relevance_sheet["relevance_llm"] = llm_relevance(relevance_sheet, judge_tokenizer, judge)
+    relevance_sheet["judge"] = judge_name
+    print(f"Relevance judged by {judge_name}: {relevance_sheet['relevance_llm'].value_counts().sort_index().to_dict()} "
+          f"({int(relevance_sheet['relevance_llm'].isna().sum())} answers outside the schema, counted as 0)")
+    relevance = relevance_sheet.set_index(["request_id", "recipe_id"])["relevance_llm"].fillna(0.0)
     rows = []
     for (request_id, method), ranked in relevance_key.sort_values("rank").groupby(["request_id", "method"])["recipe_id"]:
         gains = np.array([relevance.get((request_id, r), 0.0) for r in ranked])
@@ -261,14 +318,14 @@ if judged is not None:
         rows.append({"method": method, "NDCG@10": dcg / idcg if idcg else 0.0,
                      "Recall@10": (gains >= 1).sum() / n_relevant if n_relevant else 0.0})
     matching_results = pd.DataFrame(rows).groupby("method")[["NDCG@10", "Recall@10"]].mean().round(3)
-    print(f"\n--- Contextual matching on {len(AUTHORED_REQUESTS)} authored requests (judged relevance) ---")
+    print(f"\n--- Contextual matching on {len(AUTHORED_REQUESTS)} requests (relevance judged by {judge_name}) ---")
     print(matching_results)
 else:
-    print("Relevance judgments are not in yet: NDCG@10 and Recall@10 for the authored requests will appear here once "
-          "relevance_sheet_filled.csv is in ANNOTATION_DIR.")
+    print("No LLM could be loaded: relevance is not judged, so contextual matching is not scored.")
+relevance_sheet.to_csv(os.path.join(OUT_DIR, "relevance_sheet.csv"), index=False)
 
 # ==========================================
-# 4. TOPIC RATINGS AND EXPLANATION CHECKS
+# 4. TOPIC RATINGS
 # ==========================================
 topic_sheets = [s for s in (filled("topic_ratings_A.csv"), filled("topic_ratings_B.csv")) if s is not None]
 topic_results = None
@@ -281,21 +338,6 @@ if topic_sheets:
         paired = ratings.pivot_table(index=["model", "topic"], columns="rater", values="interpretable_1to3").dropna()
         note += f", weighted kappa {cohen_kappa_score(paired[0].astype(int), paired[1].astype(int), weights='quadratic'):.3f}"
     print(f"\nTopic interpretability (1-3, {note}):", topic_results.to_dict())
-
-checks = df_out[["member_id", "output", "request", "recipe", "text", "facts"]].copy()
-for field in ("supported", "attribution", "conditions"):
-    checks[f"{field}_A"], checks[f"{field}_B"] = "", ""
-checks.to_csv(os.path.join(OUT_DIR, "explanation_checks.csv"), index=False)
-explanation_human = None
-returned = filled("explanation_checks_filled.csv")
-if returned is not None:
-    raters = [r for r in ("A", "B") if returned[f"supported_{r}"].notna().any()]
-    yes = lambda col: returned[col].astype(str).str.lower().str.startswith("y")
-    explanation_human = pd.DataFrame({
-        field: returned.assign(v=np.logical_and.reduce([yes(f"{field}_{r}") for r in raters])).groupby("output")["v"].mean()
-        for field in ("supported", "attribution", "conditions")})
-    print(f"\nExplanation checks by {len(raters)} rater(s) (share judged yes by every rater):")
-    print(explanation_human.round(3))
 
 # ==========================================
 # 5. STATUS OF THE PROTOCOL
@@ -348,8 +390,9 @@ status = [
          f"{m}: {evaluation[(evaluation['scheme'] == 'popularity-matched') & (evaluation['method'] == m)]['NDCG@10'].mean():.3f}"
          for m in ("combined, contextual profile", "CF", "popularity"))) + " (NDCG@10, popularity-matched negatives)",
      "Task 8 (300 members)"),
-    ("Contextual matching", "NDCG@10, Recall@10 (authored requests)",
-     "see table above" if matching_results is not None else "pending: relevance_sheet.csv exported", "Task 10"),
+    ("Contextual matching", "NDCG@10, Recall@10 (requests written in advance, LLM-judged relevance)",
+     "; ".join(f"{m}: {v:.3f}" for m, v in matching_results["NDCG@10"].items()) + " (NDCG@10)"
+     if matching_results is not None else "not scored: no LLM loaded", f"Task 10 (10 requests, judge {judge_name})"),
     ("Explanations", "evidence support, incorrect-attribution rate",
      "; ".join(f"{o}: support {(g['cited'].sum() / g['sentences'].sum()):.2f}, incorrect attribution "
                f"{1 - np.mean([v for l in g['attribution'] for v in l]):.2f}" for o, g in df_out.groupby("output", sort=False)

@@ -1,6 +1,7 @@
 # Datasets (HUMMUS is downloaded from Kaggle; never commit it)
 *.csv
 !annotation_checked.csv
+!topic_ratings_A.csv
 *.csv.zip
 *.zip
 *.parquet
