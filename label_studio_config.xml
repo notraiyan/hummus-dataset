@@ -1,0 +1,11 @@
+<View>
+  <Labels name="label" toName="text">
+    <Label value="INGREDIENT"/>
+    <Label value="DISH"/>
+    <Label value="COOKING_EQUIPMENT"/>
+    <Label value="DURATION"/>
+    <Label value="OCCASION"/>
+    <Label value="DINER_GROUP"/>
+  </Labels>
+  <Text name="text" value="$text"/>
+</View>
