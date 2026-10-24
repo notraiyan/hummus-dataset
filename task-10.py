@@ -1,5 +1,5 @@
-# Imports already made by task-1.py to task-9.py (same notebook): json, os, random, re, np, pd, spacy, torch, Example,
-# compounding, minibatch, AutoModelForCausalLM, AutoTokenizer, cohen_kappa_score, f1_score.
+# Imports already made by task-1.py to task-9.py (same notebook): json, os, re, np, pd, torch, AutoModelForCausalLM,
+# AutoTokenizer, cohen_kappa_score, f1_score.
 from transformers import BitsAndBytesConfig
 
 # Task 10: Annotation and Evaluation Protocol
@@ -8,7 +8,7 @@ from transformers import BitsAndBytesConfig
 #   1. Annotation sheet: the 200-review pilot of Tasks 2 and 4 and 1,000 further reviews, pre-annotated by LLM and
 #      checked and corrected by the project author (annotation_checked.csv); only rows marked checked = y are gold.
 #   2. The system scored on the author's checked labels (NER precision/recall/F1; sentiment, condition and negation
-#      macro-F1; tuple-level F1), and an NER model trained on the checked main-set clauses, tested on the pilot.
+#      macro-F1; tuple-level F1), and NER models fine-tuned on the checked main-set clauses, tested on the pilot.
 #   3. Contextual matching: requests written in advance, candidates pooled from each method, and relevance judged by
 #      an LLM (Qwen3-14B in 4-bit) blind to the method, scored with NDCG@10 and Recall@10. Task 8's chronological split cannot
 #      test context: Food.com does not record the request behind a review, and the held-out review is not known in
@@ -19,7 +19,7 @@ from transformers import BitsAndBytesConfig
 for required in ("df_clauses", "df_reviews", "pilot_rows", "dictionary_ner", "model_ner", "nlp_ner", "preferences_for",
                  "rules_label", "split_into_sentences", "facts", "recipes", "catalog", "popularity", "reviewed",
                  "parse_request", "satisfies", "score_candidates", "member_facts", "extractive_summary", "minutes",
-                 "df_out", "llm", "LLM_MODEL"):
+                 "df_out", "llm", "LLM_MODEL", "train_ner", "nlp_general", "GENERAL_MAP"):
     if required not in globals():
         raise NameError(f"{required} is missing: run load-dataset.py and task-1.py to task-9.py in this session first.")
 
@@ -150,38 +150,32 @@ def entity_offsets(text, entities):
 
 
 def ner_on_checked_labels(labels):
-    """A domain-adapted NER model trained on the checked main-set clauses, and P/R/F1 on the checked pilot clauses (held
-    out of Task 2's training) for it, the dictionary and Task 2's model trained on dictionary labels."""
+    """NER models trained on the checked main-set clauses (the pretrained en_core_web_sm fine-tuned, and a blank model
+    for comparison), and P/R/F1 on the checked pilot clauses (held out of Task 2's training) for them, the dictionary,
+    Task 2's model (fine-tuned on dictionary labels) and the unadapted pretrained model."""
     train_rows, test_rows = labels[labels["stage"] == "main"], labels[labels["stage"] == "pilot"]
     if not len(train_rows) or not len(test_rows):
         return None
-    spacy.util.fix_random_seed(SEED)
-    random.seed(SEED)
-    nlp_checked = spacy.blank("en")
-    ner_checked = nlp_checked.add_pipe("ner")
-    for label in LABELS:  # Task 2's entity labels
-        ner_checked.add_label(label)
-    examples = []
-    for text, entities in zip(train_rows["clause"].astype(str), train_rows["entities"]):
-        doc = nlp_checked.make_doc(text)
-        spans = [(s, e, l) for s, e, l in entity_offsets(text, entities) if doc.char_span(s, e) is not None]
-        examples.append(Example.from_dict(doc, {"entities": spans}))
-    optimizer = nlp_checked.initialize(lambda: examples)
-    for _ in range(N_NER_EPOCHS):
-        random.shuffle(examples)
-        for batch in minibatch(examples, size=compounding(4.0, 32.0, 1.001)):
-            nlp_checked.update(batch, sgd=optimizer, drop=0.2)
+    train_texts = train_rows["clause"].astype(str).tolist()
+    train_ents = [entity_offsets(t, e) for t, e in zip(train_texts, train_rows["entities"])]
+    print("Fine-tuning the pretrained NER on the checked labels:")
+    nlp_checked = train_ner(train_texts, train_ents, pretrained=True, epochs=N_NER_EPOCHS)
+    print("Training a blank NER on the checked labels:")
+    nlp_checked_scratch = train_ner(train_texts, train_ents, pretrained=False, epochs=N_NER_EPOCHS)
     texts = test_rows["clause"].astype(str).tolist()
     as_sets = lambda preds: [{(t[s:e].lower(), label) for s, e, label in p} for t, p in zip(texts, preds)]
     return {name: set_f1(test_rows["entities"].tolist(), as_sets(preds)) for name, preds in (
-        ("dictionary", dictionary_ner(texts)), ("Task 2 model (dictionary labels)", model_ner(nlp_ner, texts)),
-        ("model trained on checked labels", model_ner(nlp_checked, texts)))}
+        ("general spaCy (unadapted)", model_ner(nlp_general, texts, GENERAL_MAP)),
+        ("dictionary", dictionary_ner(texts)),
+        ("Task 2 model (fine-tuned on dictionary labels)", model_ner(nlp_ner, texts)),
+        ("blank model trained on checked labels", model_ner(nlp_checked_scratch, texts)),
+        ("pretrained model fine-tuned on checked labels", model_ner(nlp_checked, texts)))}
 
 
 checked_ner_results = ner_on_checked_labels(author_labels) if annotation_results else None
 if checked_ner_results:
     n_train, n_test = (author_labels["stage"] == "main").sum(), (author_labels["stage"] == "pilot").sum()
-    print(f"\n--- NER on the checked pilot ({n_test} clauses), model trained on {n_train} checked main-set clauses ---")
+    print(f"\n--- NER on the checked pilot ({n_test} clauses), models trained on {n_train} checked main-set clauses ---")
     for name, value in checked_ner_results.items():
         print(f"   {name} P/R/F1: {value}")
 elif annotation_results:
@@ -360,8 +354,11 @@ status = [
     ("NER", "entity-level P/R/F1",
      (f"dictionary {annotation_results['NER dictionary P/R/F1']}, Task 2 model "
       f"{annotation_results['NER domain model P/R/F1']}" + (
-          f"; pilot, model trained on checked labels {checked_ner_results['model trained on checked labels']} vs "
-          f"dictionary {checked_ner_results['dictionary']}" if checked_ner_results else ""))
+          f"; pilot: pretrained model fine-tuned on checked labels "
+          f"{checked_ner_results['pretrained model fine-tuned on checked labels']}, blank model "
+          f"{checked_ner_results['blank model trained on checked labels']}, dictionary "
+          f"{checked_ner_results['dictionary']}, unadapted pretrained "
+          f"{checked_ner_results['general spaCy (unadapted)']}" if checked_ner_results else ""))
      if annotation_results else value("comparison", lambda: (
          f"pilot gold, micro F1: dictionary {comparison.loc['MICRO', ('dictionary', 'f1')]:.2f}, "
          f"domain model {comparison.loc['MICRO', ('domain model', 'f1')]:.2f}")), source("Task 2 (41 hand-written sentences)")),

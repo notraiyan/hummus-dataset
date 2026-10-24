@@ -86,12 +86,13 @@ Kaggle access may require credentials (see the `kagglehub` documentation). `task
 
 ## Task 2 details
 
-Run order in a Kaggle notebook (one cell per file, same session): `load-dataset.py`, `task-1.py`, `task-2.py`. spaCy is preinstalled on Kaggle; no internet is needed.
+Run order in a Kaggle notebook (one cell per file, same session): `load-dataset.py`, `task-1.py`, `task-2.py`. spaCy and its pretrained `en_core_web_sm` are preinstalled on Kaggle (downloaded when missing, so keep internet on).
 
 - Labels: `INGREDIENT`, `DISH`, `COOKING_EQUIPMENT`, `DURATION`, `OCCASION`, `DINER_GROUP`.
 - **Dictionary NER:** spaCy `PhraseMatcher` over lexicons (frequent FoodKG ingredient names and dish phrases from recipe titles, plus hand-written equipment, occasion and diner-group lists) and a regex for durations. Overlaps keep the longest match.
-- **Domain-adapted NER:** a spaCy NER model trained on 20k review clauses labelled by the dictionary (weak supervision), so it can tag terms missing from the lexicons. The 200 pilot reviews are held out of training, and the frequency analysis uses clauses not seen in training. Training takes about 5-10 minutes on a CPU.
-- **General baseline:** pretrained `en_core_web_sm`, mapped to the project labels where possible (`TIME` to `DURATION`, `DATE`/`EVENT` to `OCCASION`); skipped if the model is not installed.
+- **Domain-adapted NER:** the pretrained `en_core_web_sm` NER, fine-tuned with the six project labels on 20k review clauses labelled by the dictionary (weak supervision), so it keeps what it knows of English and can tag terms missing from the lexicons. Its own labels (PERSON, ORG, ...) are dropped from the output. The 200 pilot reviews are held out of training, and the frequency analysis uses clauses not seen in training. Training takes a few minutes on a CPU.
+- **From scratch:** a blank spaCy NER trained on the same clauses and labels, to show what the pretraining adds.
+- **General baseline:** `en_core_web_sm` as it comes, mapped to the project labels where possible (`TIME` to `DURATION`, `DATE`/`EVENT` to `OCCASION`); the brief's point that general-purpose NER needs extra labels or training for `OCCASION`, `DINER_GROUP` and `COOKING_EQUIPMENT` is what the comparison shows.
 - **Evaluation:** entity-level exact-match P/R/F1 on a small hand-written gold set (about 40 sentences, in `task-2.py`). This is a pilot only; extend it with the Task 10 annotations. The model is trained on dictionary labels, so a gain over the dictionary on gold reflects generalisation, not agreement with human annotation.
 - **Outputs** (in `/kaggle/working`, or the current folder locally): `hummus_ner_model/`, `task2_entities.csv` (entities with offsets, for later tasks), `task2_pilot_annotation.csv` (200 reviews for manual correction).
 - Meal times (breakfast, dinner) are not labelled as `OCCASION`; the holder ("I", "we") is left to Task 5.

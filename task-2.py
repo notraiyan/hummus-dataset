@@ -12,7 +12,7 @@ from spacy.util import compounding, minibatch
 
 # Task 2: Named Entity Recognition for Food and Context
 # Run load-dataset.py and task-1.py first (this needs df_recipes and df_clauses).
-# Kaggle: spaCy is preinstalled and no internet is needed; the pretrained spaCy baseline is skipped if absent.
+# Kaggle: spaCy is preinstalled; en_core_web_sm (pretrained, fine-tuned here) is downloaded if missing, so keep internet on.
 
 for required in ("df_recipes", "df_clauses"):
     if required not in globals():
@@ -246,7 +246,9 @@ dict_gold_preds = [set(p) for p in dictionary_ner(gold_texts)]
 # ==========================================
 # 4. DOMAIN-ADAPTED NER MODEL (weak supervision from the dictionary)
 # ==========================================
-# Trained on dictionary-labelled review clauses, so it can generalise to unseen terms from context and word shape.
+# The pretrained en_core_web_sm NER, fine-tuned on dictionary-labelled review clauses with the six project labels, so it
+# can generalise to unseen terms from context and word shape. A blank model trained on the same labels shows what the
+# pretraining adds.
 # The 200 pilot reviews (section 7) are held out so their corrected labels can later serve as unseen gold.
 pilot_rows = sorted(df_clauses["review_row"].drop_duplicates().sample(200, random_state=SEED))
 clause_texts = df_clauses.loc[~df_clauses["review_row"].isin(pilot_rows), "sentences"].astype(str)
@@ -255,31 +257,54 @@ train_sample = clause_texts.sample(min(N_TRAIN_CLAUSES, len(clause_texts)), rand
 train_texts = train_sample.tolist()
 train_ents = dictionary_ner(train_texts)
 
-nlp_ner = spacy.blank("en")
-ner = nlp_ner.add_pipe("ner")
-for label in LABELS:
-    ner.add_label(label)
+def load_pretrained(**kwargs):
+    """The pretrained general-purpose spaCy pipeline (downloaded when missing)."""
+    try:
+        return spacy.load("en_core_web_sm", **kwargs)
+    except OSError:
+        spacy.cli.download("en_core_web_sm")
+        return spacy.load("en_core_web_sm", **kwargs)
 
-train_examples = [
-    Example.from_dict(nlp_ner.make_doc(text), {"entities": ents}) for text, ents in zip(train_texts, train_ents)
-]
-optimizer = nlp_ner.initialize(lambda: train_examples)
-for epoch in range(N_EPOCHS):
-    random.shuffle(train_examples)
-    losses = {}
-    for batch in minibatch(train_examples, size=compounding(4.0, 32.0, 1.001)):
-        nlp_ner.update(batch, sgd=optimizer, drop=0.2, losses=losses)
-    print(f"epoch {epoch + 1}/{N_EPOCHS}  ner loss: {losses['ner']:.1f}")
 
+def train_ner(texts, entity_lists, pretrained, epochs=N_EPOCHS):
+    """A NER model with the six project labels trained on (start, end, label) spans. pretrained=True fine-tunes the
+    pretrained en_core_web_sm NER (domain adaptation: it keeps what it knows of English and learns the new labels);
+    False trains a blank model from scratch. Spans that do not fall on token boundaries are dropped."""
+    random.seed(SEED)
+    spacy.util.fix_random_seed(SEED)
+    nlp = load_pretrained(exclude=["tok2vec", "tagger", "parser", "attribute_ruler", "lemmatizer"]) if pretrained else spacy.blank("en")
+    ner = nlp.get_pipe("ner") if pretrained else nlp.add_pipe("ner")
+    for label in LABELS:
+        ner.add_label(label)
+    examples = []
+    for text, ents in zip(texts, entity_lists):
+        doc = nlp.make_doc(text)
+        examples.append(Example.from_dict(doc, {"entities": [(s, e, l) for s, e, l in ents if doc.char_span(s, e)]}))
+    optimizer = nlp.resume_training() if pretrained else nlp.initialize(lambda: examples)
+    for epoch in range(epochs):
+        random.shuffle(examples)
+        losses = {}
+        for batch in minibatch(examples, size=compounding(4.0, 32.0, 1.001)):
+            nlp.update(batch, sgd=optimizer, drop=0.2, losses=losses)
+        print(f"  epoch {epoch + 1}/{epochs}  ner loss: {losses['ner']:.1f}")
+    return nlp
+
+
+print("Fine-tuning the pretrained en_core_web_sm NER on the dictionary labels:")
+nlp_ner = train_ner(train_texts, train_ents, pretrained=True)
 nlp_ner.to_disk(os.path.join(OUT_DIR, "hummus_ner_model"))
+print("Training a blank NER model on the same labels, for comparison:")
+nlp_scratch = train_ner(train_texts, train_ents, pretrained=False)
 
 
 def model_ner(nlp, texts, label_map=None):
+    """(start, end, label) per text. Without a label_map only the six project labels are kept: the pretrained model's
+    own labels (PERSON, ORG, ...) are dropped."""
     out = []
     for doc in nlp.pipe(texts, batch_size=256):
         ents = set()
         for e in doc.ents:
-            label = label_map.get(e.label_) if label_map else e.label_
+            label = label_map.get(e.label_) if label_map else (e.label_ if e.label_ in LABELS else None)
             if label:
                 ents.add((e.start_char, e.end_char, label))
         out.append(ents)
@@ -287,22 +312,19 @@ def model_ner(nlp, texts, label_map=None):
 
 
 model_gold_preds = model_ner(nlp_ner, gold_texts)
+scratch_gold_preds = model_ner(nlp_scratch, gold_texts)
 
-# General-purpose baseline: pretrained spaCy NER mapped onto the project labels. Only TIME, DATE and EVENT have a rough
-# counterpart; there is no label for ingredients, dishes, equipment or diner groups.
-general_preds = None
-try:
-    nlp_general = spacy.load("en_core_web_sm", disable=["parser", "lemmatizer"])
-    general_preds = model_ner(nlp_general, gold_texts, {"TIME": "DURATION", "DATE": "OCCASION", "EVENT": "OCCASION"})
-except OSError:
-    print("en_core_web_sm not installed: skipping the general-purpose baseline.")
+# General-purpose baseline: the pretrained spaCy NER as it comes, mapped onto the project labels. Only TIME, DATE and
+# EVENT have a rough counterpart; there is no label for ingredients, dishes, equipment or diner groups.
+nlp_general = load_pretrained(exclude=["tok2vec", "tagger", "parser", "attribute_ruler", "lemmatizer"])
+GENERAL_MAP = {"TIME": "DURATION", "DATE": "OCCASION", "EVENT": "OCCASION"}
+general_preds = model_ner(nlp_general, gold_texts, GENERAL_MAP)
 
 # ==========================================
 # 5. COMPARISON
 # ==========================================
-results = {"dictionary": entity_prf(gold_sets, dict_gold_preds), "domain model": entity_prf(gold_sets, model_gold_preds)}
-if general_preds is not None:
-    results["general spaCy"] = entity_prf(gold_sets, general_preds)
+results = {"dictionary": entity_prf(gold_sets, dict_gold_preds), "domain model": entity_prf(gold_sets, model_gold_preds),
+           "from scratch": entity_prf(gold_sets, scratch_gold_preds), "general spaCy": entity_prf(gold_sets, general_preds)}
 
 comparison = pd.concat(results, axis=1)
 print(f"\n--- Entity-level P/R/F1 on {len(gold_texts)} hand-written gold sentences ---")
