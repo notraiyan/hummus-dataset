@@ -1,5 +1,3 @@
-!pip install -q bitsandbytes
-
 # Imports already made by task-1.py to task-9.py (same notebook): json, os, random, re, np, pd, spacy, torch, Example,
 # compounding, minibatch, AutoModelForCausalLM, AutoTokenizer, cohen_kappa_score, f1_score.
 from transformers import BitsAndBytesConfig
@@ -370,7 +368,7 @@ status = [
     ("Sentiment", "macro-F1",
      annotation_results["sentiment macro-F1"] if annotation_results else value("gold_results", lambda: (
          f"pilot gold: ABSA model {gold_results.loc['ABSA model', 'sentiment macro-F1']:.2f}, "
-         f"lexicon {gold_results.loc['lexicon', 'sentiment macro-F1']:.2f}")), source("Task 4 (42 hand-written reviews)")),
+         f"lexicon {gold_results.loc['lexicon', 'sentiment macro-F1']:.2f}")), source("Task 4 (45 hand-written reviews)")),
     ("Conditions", "macro-F1 (condition, negation)",
      f"{annotation_results['condition macro-F1']}, {annotation_results['negation macro-F1']}" if annotation_results
      else value("results", lambda: f"challenge set: {int(results['Task 6 correct'].sum())}/{len(results)} sentences, "
@@ -379,7 +377,7 @@ status = [
     ("Relation extraction", "tuple-level F1",
      str(annotation_results["tuple-level P/R/F1"]) if annotation_results else value("gold_mentions", lambda: (
          "pilot gold, tuple accuracy: " + ", ".join(f"{name} {score(h, c, gold_mentions['gold'])['tuple accuracy']:.2f}"
-                                                   for name, (h, c) in methods.items()))), source("Task 5 (45 gold mentions)")),
+                                                   for name, (h, c) in methods.items()))), source("Task 5 (47 gold mentions)")),
     ("Topic modelling", "coherence, diversity, human ratings",
      ("; ".join(f"{m}: NPMI {n}, diversity {d}" for m, n, d in
                 zip(topic_scores["model"], topic_scores["coherence_npmi"], topic_scores["diversity@25"]))

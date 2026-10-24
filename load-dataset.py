@@ -1,3 +1,6 @@
+# Installed before transformers is first imported (Task 3), so that Task 10 can load its relevance judge in 4-bit.
+!pip install -q bitsandbytes
+
 import kagglehub
 from kagglehub import KaggleDatasetAdapter
 
