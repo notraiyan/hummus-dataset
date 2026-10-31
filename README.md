@@ -47,16 +47,44 @@ Dataset caveats that affect the analysis:
 | `task-8.py`       | Task 8: context-aware recipe retrieval and recommendation. |
 | `task-9.py`       | Task 9: evidence-grounded summaries and explanations. |
 | `task-10.py`      | Task 10: annotation sheets, agreement, evaluation and the protocol's status. |
+| `run-all-tasks-for-hummus.ipynb` | One notebook that runs all the files above in order, with the Kaggle run's outputs. |
 | `ANNOTATION.md`   | Guidelines for the annotators and raters. |
 | `LITERATURE.md`   | Related work and the case for the project's novelty (a starting point; check every reference). |
 | `annotation_checked.csv` | LLM's pre-annotation of the 1,200 annotation reviews, checked and corrected by the author (clauses marked `checked` = y); the gold for Task 10. |
 | `topic_ratings_A.csv` | The author's interpretability ratings of Task 3's topics. These two are the only CSVs tracked in git; upload both to Kaggle for Task 10. |
 
-## Setup
+## Run everything in one notebook
+
+[`run-all-tasks-for-hummus.ipynb`](run-all-tasks-for-hummus.ipynb) runs the whole pipeline in one Kaggle (or Jupyter) session: one cell per file, in order, with the outputs of the Kaggle run saved in it. Upload it to Kaggle, or create a notebook and paste each file into its own cell. The files are notebook cells (two start with `!pip`) and do not run as stand-alone scripts. The notebook holds copies of the files, so after editing a file, update its cell too. The cells, in order:
+
+| Cell | File | Main work |
+|---|---|---|
+| 1 | `load-dataset.py` | Installs `bitsandbytes`, loads the three HUMMUS tables with `kagglehub` |
+| 2 | `task-1.py` | Cleans the text, splits reviews into clauses (needs the tables) |
+| 3 | `task-2.py` | Dictionary and fine-tuned NER; trains two spaCy models |
+| 4 | `task-3.py` | Installs `bertopic` and `gensim`; LDA, NMF and BERTopic |
+| 5 | `task-4.py` | Aspect cues and sentiment (downloads the ABSA model) |
+| 6 | `task-5.py` | Holders and contexts (downloads Qwen3-4B, about 8 GB) |
+| 7 | `task-6.py` | Negation, conditions, exceptions |
+| 8 | `task-7.py` | Contextual profiles |
+| 9 | `task-8.py` | Recommendation and chronological evaluation |
+| 10 | `task-9.py` | Cited summaries and explanations (uses Qwen3-4B) |
+| 11 | `task-10.py` | Evaluation on the checked labels; loads Qwen3-14B as relevance judge; prints the status table |
+| 12 | (viewer) | Optional: prints the generated explanations from `task9_outputs.csv` |
+
+Before running on Kaggle:
+
+1. **Attach your dataset** with `annotation_checked.csv` and `topic_ratings_A.csv`. Cell 11 finds it under `/kaggle/input` by itself; without it, the checked-label scores are skipped.
+2. **Turn internet on** (the HUMMUS tables, spaCy's `en_core_web_sm` and the models are downloaded; the HUMMUS tables load from the Kaggle dataset `raiyanahmed/hummus`).
+3. **Set the accelerator to GPU T4 x2.** Qwen3-4B, the ABSA model and the embeddings are faster on a GPU, and Qwen3-14B (the relevance judge, loaded in 4-bit) needs one; without a GPU, Task 10 falls back to Qwen3-4B as the judge.
+4. **Run the cells in order, in one session.** Each cell uses names from the earlier ones and stops with an error naming what is missing. Restart the session first if `transformers` was already imported, so that the `bitsandbytes` install in cell 1 takes effect.
+
+Outputs go to `/kaggle/working` (for example `task4_aspect_sentiments.csv`, `task9_outputs.csv`, `evaluation_status.csv`, `hummus_ner_model/`). Task 2 trains two models, Task 10 trains two more and downloads Qwen3-14B (about 30 GB; about 2 minutes to download and 2 to load in the Kaggle run), so the full run is long: check the session limit before starting. Task 3 pins nothing, so BERTopic's topics can change slightly between runs; the ratings in `topic_ratings_A.csv` describe the run that produced them.
+
+To run locally instead, install the packages below, strip the `!` lines (or use Jupyter), and run the notebook in the same order:
 
 ```bash
 pip install kagglehub pandas matplotlib seaborn nltk spacy scikit-learn bertopic gensim transformers torch sentencepiece bitsandbytes
-python task-1.py
 ```
 
 Kaggle access may require credentials (see the `kagglehub` documentation). `task-1.py` downloads the NLTK tokenizer data on first run.
@@ -94,6 +122,7 @@ Run order in a Kaggle notebook (one cell per file, same session): `load-dataset.
 - **From scratch:** a blank spaCy NER trained on the same clauses and labels, to show what the pretraining adds.
 - **General baseline:** `en_core_web_sm` as it comes, mapped to the project labels where possible (`TIME` to `DURATION`, `DATE`/`EVENT` to `OCCASION`); the brief's point that general-purpose NER needs extra labels or training for `OCCASION`, `DINER_GROUP` and `COOKING_EQUIPMENT` is what the comparison shows.
 - **Evaluation:** entity-level exact-match P/R/F1 on a small hand-written gold set (about 40 sentences, in `task-2.py`). This is a pilot only; extend it with the Task 10 annotations. The model is trained on dictionary labels, so a gain over the dictionary on gold reflects generalisation, not agreement with human annotation.
+- **Findings (41 hand-written sentences; local run, Kaggle's will differ slightly):** micro F1 0.964 for the dictionary, 0.902 for the fine-tuned pretrained model, 0.864 for the blank model trained on the same labels and 0.272 for the unadapted `en_core_web_sm`. The general model has precision 0.82 but recall 0.16: it finds nothing for `INGREDIENT`, `DISH`, `COOKING_EQUIPMENT` or `DINER_GROUP`, and only a third of `OCCASION`. Pretraining adds about 0.04 F1 over the blank model, but the model still stays below the dictionary it learned from.
 - **Outputs** (in `/kaggle/working`, or the current folder locally): `hummus_ner_model/`, `task2_entities.csv` (entities with offsets, for later tasks), `task2_pilot_annotation.csv` (200 reviews for manual correction).
 - Meal times (breakfast, dinner) are not labelled as `OCCASION`; the holder ("I", "we") is left to Task 5.
 
@@ -191,7 +220,7 @@ Run after the earlier cells in the same notebook. The annotators' guidelines are
 
 - **Annotation:** `annotation_sheet.csv` holds the 200-review pilot (the reviews of the Task 2 and Task 4 pilot sheets) and 1,000 further reviews, one row per clause (6,149 clauses). They were pre-annotated by LLM, following ANNOTATION.md: entities, and opinions with aspect, sentiment, holder, context, condition and negation, spans written as text. They were labelled in 24 batches of 50 reviews; where batches decided the same case differently, the case was settled once in ANNOTATION.md's Decisions and applied to all (104 clauses changed). When Task 1 was fixed to clean HTML and split at line breaks, the labels were carried over to the new clauses, and the 118 new clause pieces were labelled the same way. When `SUITABILITY` was added, the 175 clauses that mention an occasion were relabelled for it. After the author's check, the labels hold 5,607 entities and 2,297 opinions (TASTE 977, TEXTURE 411, PREP_EFFORT 386, TIME 191, INGREDIENT_AVAILABILITY 179, SUITABILITY 77, HEALTHINESS 76). 94% of opinions are the reviewer's own; 47 carry a condition or exception, and 112 an occasion.
 - **Checking:** the author checks and corrects the pre-annotation in `annotation_checked.csv` (a copy with the full review for context) and marks each checked clause `y`. Task 10 uses only checked clauses as gold and scores the system on them: NER precision, recall and F1 (dictionary and model), aspect detection, sentiment, condition and negation macro-F1, and tuple-level F1. It also trains a domain-adapted NER model on the checked main-set clauses and compares it with the dictionary and Task 2's model (trained on dictionary labels) on the checked pilot clauses, which Task 2 held out of training. The brief's double annotation and agreement are not done: there is one annotator, who corrected the pre-annotation instead of labelling from scratch.
-- **Findings on the author's checked labels (6,149 clauses):** NER micro P/R/F1 0.75/0.61/0.675 for the dictionary and 0.73/0.60/0.659 for Task 2's model, far below the 0.96 and 0.91 on the hand-written sentences, so a model trained on dictionary labels does not beat the dictionary on real reviews. A model trained on the checked main-set clauses instead reaches 0.77/0.73/0.746 on the checked pilot, against 0.671 for the dictionary and 0.652 for Task 2's model: annotated data, not more dictionary labels, is what improves NER. Aspect detection 0.89/0.65/0.75: what the system finds is mostly right, but it misses a third of the opinions. On matched opinions, sentiment macro-F1 is 0.60, condition 0.50 and negation 0.76; macro-F1 weighs the rare classes (neutral; condition and exception, 47 of 2,297) as much as the common ones. Tuple-level P/R/F1 (aspect, sentiment, holder, context, condition) is 0.73/0.54/0.62.
+- **Findings on the author's checked labels (6,149 clauses):** NER micro P/R/F1 0.75/0.61/0.675 for the dictionary and 0.74/0.60/0.663 for Task 2's model (the pretrained NER fine-tuned on dictionary labels), far below the 0.96 and 0.90 on the hand-written sentences, so a model trained on dictionary labels still does not beat the dictionary on real reviews. The pretrained NER fine-tuned on the checked main-set clauses instead reaches 0.78/0.75/0.765 on the checked pilot, against 0.671 for the dictionary, 0.654 for Task 2's model, 0.746 for a blank model trained on the same checked labels and 0.042 for the unadapted `en_core_web_sm` (precision 0.26, recall 0.02): annotated data, not more dictionary labels, is what improves NER, and pretraining adds about 0.02 F1 on top of it. Aspect detection 0.89/0.65/0.75: what the system finds is mostly right, but it misses a third of the opinions. On matched opinions, sentiment macro-F1 is 0.60, condition 0.50 and negation 0.76; macro-F1 weighs the rare classes (neutral; condition and exception, 47 of 2,297) as much as the common ones. Tuple-level P/R/F1 (aspect, sentiment, holder, context, condition) is 0.73/0.54/0.62.
 - **Contextual matching:** 10 requests written before any candidate was seen ("Recommend a quick dinner for my children.", "A dessert for my guests."), each for a member whose history has opinions of that holder. They were written by the LLM that helped build the pipeline, not by the author, so they are not manually authored in the brief's sense. The top 10 recipes of five methods (combined with the contextual or the context-independent profile, content only, CF, popularity) are pooled (292 candidates in the Kaggle run, shuffled, methods hidden), and an LLM judges each one 0, 1 or 2 in a fixed JSON schema: Qwen3-14B (Apache-2.0) in 4-bit on a GPU, or Task 5's Qwen3-4B without one; neither takes part in the ranking. It judges from the request, the member's quoted earlier opinions and the recipe's record (2 only when the recipe clearly suits the person or occasion named and does not conflict with those opinions). NDCG@10 and Recall@10 are computed from these judgments. They are LLM judgments, not the human, independent assessment the brief describes. `relevance_sheet.csv` keeps the judgments and `relevance_key.csv` the rankings.
 - **Contextual matching results (judged by Qwen3-14B, Kaggle run):** every candidate already meets the request's checkable constraints, so the rubric gives 2 only when the recipe clearly suits the person or occasion named. The judge rated 179 of the 292 candidates fully relevant (2), 95 partly (1) and 18 not (0); Qwen3-4B, with the same rubric, rated 75% fully relevant and could not separate the methods (all 0.83-0.87 NDCG@10). NDCG@10 (Recall@10): content only 0.849 (0.372), combined with the contextual profile 0.773 (0.355), combined with the context-independent profile 0.732 (0.346), popularity 0.699 (0.334) and CF 0.673 (0.326). The contextual profile lifts the combination by 0.04 NDCG@10 over the context-independent one, the direction the project predicts, but on 10 requests, with LLM judgments and no significance test, this is suggestive, not shown. Content only ranks first, probably in part because the judge sees what the content score uses (the request and the recipe's title and tags; the content score matches the request's words, plus "kid friendly" for children or "party crowd" for guests, against them); CF and popularity, which ignore the request, rank last.
 - **Topics:** the author (a second rater is optional) fills Task 3's `topics_for_human_rating_*.csv` (as `topic_ratings_A.csv`); the script reports mean interpretability per model, with agreement when there are two raters. Explanations are checked automatically in Task 9.
@@ -200,7 +229,7 @@ Run after the earlier cells in the same notebook. The annotators' guidelines are
 | Area | Metric | Measured so far | Still needed |
 |---|---|---|---|
 | Annotation | clauses checked by the author | all 6,149 clauses of 1,200 reviews | double annotation and agreement (one annotator) |
-| NER | entity-level P/R/F1 | checked labels: micro F1 dictionary 0.675, Task 2 model 0.659; on the pilot, a model trained on the checked main set 0.746 vs dictionary 0.671 (41 hand-written sentences: 0.96, 0.91) | |
+| NER | entity-level P/R/F1 | checked labels: micro F1 dictionary 0.675, Task 2 model 0.663; on the pilot, the pretrained NER fine-tuned on the checked main set 0.765 (blank model 0.746, dictionary 0.671, unadapted pretrained 0.042) (41 hand-written sentences: 0.96, 0.90) | |
 | Sentiment | macro-F1 | checked labels: 0.60 (45 hand-written reviews: ABSA model 0.87, lexicon 0.97) | |
 | Conditions | macro-F1 | checked labels: condition 0.50, negation 0.76 (challenge set: 32 of 32 sentences) | |
 | Relation extraction | tuple-level F1 | checked labels: 0.62 (P 0.73, R 0.54) (47 gold mentions, tuple accuracy: rules 0.94, LLM 0.68) | |
